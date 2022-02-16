@@ -138,6 +138,7 @@ func NewMigrationController(templateService services.TemplateService,
 		catchAllPendingTimeoutSeconds:      defaultCatchAllPendingTimeoutSeconds,
 	}
 
+	// 监听 VMI 对象、Pod 对象、Migration 对象并添加对应的 EventHandler
 	c.vmiInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.addVMI,
 		DeleteFunc: c.deleteVMI,
@@ -258,6 +259,7 @@ func (c *MigrationController) execute(key string) error {
 	var vmi *virtv1.VirtualMachineInstance
 	var targetPods []*k8sv1.Pod
 
+	// 根据 key，从 Informer 的本地缓存中获取 Migration 对象
 	// Fetch the latest state from cache
 	obj, exists, err := c.migrationInformer.GetStore().GetByKey(key)
 	if err != nil {
@@ -282,6 +284,7 @@ func (c *MigrationController) execute(key string) error {
 		return err
 	}
 
+	// 根据 Migration.Namespace 和 Migration.Spec.VMIName 来获取 VMI 对象
 	vmiObj, vmiExists, err := c.vmiInformer.GetStore().GetByKey(fmt.Sprintf("%s/%s", migration.Namespace, migration.Spec.VMIName))
 	if err != nil {
 		return err
@@ -299,6 +302,7 @@ func (c *MigrationController) execute(key string) error {
 	}
 
 	vmi = vmiObj.(*virtv1.VirtualMachineInstance)
+	// 获取迁移目标 Pod
 	targetPods, err = c.listMatchingTargetPods(migration, vmi)
 	if err != nil {
 		return err
@@ -314,6 +318,7 @@ func (c *MigrationController) execute(key string) error {
 		syncErr = c.sync(key, migration, vmi, targetPods)
 	}
 
+	// 更新 Migration 对象的 status，Migration.Status.Phase 状态转换为：UnSet->Pending->Scheduling->Scheduled->PreparingTarget->TargetReady->Running
 	err = c.updateStatus(migration, vmi, targetPods)
 	if err != nil {
 		return err
@@ -1086,6 +1091,7 @@ func (c *MigrationController) listMatchingTargetPods(migration *virtv1.VirtualMa
 	return pods, nil
 }
 
+// 收到 Event 事件直接加入 workQueue
 func (c *MigrationController) addMigration(obj interface{}) {
 	c.enqueueMigration(obj)
 }
@@ -1144,6 +1150,7 @@ func (c *MigrationController) resolveControllerRef(namespace string, controllerR
 	return migration.(*virtv1.VirtualMachineInstanceMigration)
 }
 
+// Pod 对象的 Event 事件，根据 Pod 的 Annotation 中的 migrationJobName 来找到对应的 migration 对象，然后加入到 workQ
 // When a pod is created, enqueue the migration that manages it and update its podExpectations.
 func (c *MigrationController) addPod(obj interface{}) {
 	pod := obj.(*k8sv1.Pod)
@@ -1347,6 +1354,7 @@ func (c *MigrationController) listMigrationsMatchingVMI(namespace string, name s
 	return migrations, nil
 }
 
+// VMI 对象的 Event 事件，根据 vmi 的 Namespace 和 Name 获取匹配的 Migration 对象，然后加入到 workQueue
 func (c *MigrationController) addVMI(obj interface{}) {
 	vmi := obj.(*virtv1.VirtualMachineInstance)
 	if vmi.DeletionTimestamp != nil {

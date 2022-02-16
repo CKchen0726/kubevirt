@@ -171,6 +171,7 @@ func NewVMIController(templateService services.TemplateService,
 		topologyHinter:     topologyHinter,
 	}
 
+	// 监听 VMI 对象、Pod 对象、DataVolume 对象并添加对应的 EventHandler
 	c.vmiInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.addVirtualMachineInstance,
 		DeleteFunc: c.deleteVirtualMachineInstance,
@@ -279,7 +280,7 @@ func (c *VMIController) Execute() bool {
 }
 
 func (c *VMIController) execute(key string) error {
-
+	// 根据 key，从 Informer 的本地缓存中获取 VMI 对象
 	// Fetch the latest Vm state from cache
 	obj, exists, err := c.vmiInformer.GetStore().GetByKey(key)
 
@@ -319,6 +320,7 @@ func (c *VMIController) execute(key string) error {
 		return nil
 	}
 
+	// 获取和当前 vmi 对象匹配的 Pod
 	// Only consider pods which belong to this vmi
 	// excluding unfinalized migration targets from this list.
 	pod, err := controller.CurrentVMIPod(vmi, c.podInformer)
@@ -327,6 +329,7 @@ func (c *VMIController) execute(key string) error {
 		return err
 	}
 
+	// 根据 vmi.Spec.Volumes，获取匹配的 DataVolumes 对象
 	// Get all dataVolumes associated with this vmi
 	dataVolumes, err := c.listMatchingDataVolumes(vmi)
 	if err != nil {
@@ -334,8 +337,10 @@ func (c *VMIController) execute(key string) error {
 		return err
 	}
 
+	// 同步 sync，若 Pod 不存在，则创建 launcher 所在的 Pod
 	syncErr := c.sync(vmi, pod, dataVolumes)
 
+	// 更新 vmi 对象的 status
 	err = c.updateStatus(vmi, pod, dataVolumes, syncErr)
 	if err != nil {
 		return err
@@ -1158,6 +1163,7 @@ func (c *VMIController) updatePVC(old, cur interface{}) {
 	}
 }
 
+// DataVolume 对象 Event 事件，根据DataVolume 的 Namespace 和 Name 获取匹配的 vmis，然后将 vmi 对象依次加入到 workQueue
 func (c *VMIController) addDataVolume(obj interface{}) {
 	dataVolume := obj.(*cdiv1.DataVolume)
 	if dataVolume.DeletionTimestamp != nil {
@@ -1174,6 +1180,7 @@ func (c *VMIController) addDataVolume(obj interface{}) {
 		c.enqueueVirtualMachine(vmi)
 	}
 }
+
 func (c *VMIController) updateDataVolume(old, cur interface{}) {
 	curDataVolume := cur.(*cdiv1.DataVolume)
 	oldDataVolume := old.(*cdiv1.DataVolume)
@@ -1245,6 +1252,7 @@ func (c *VMIController) addPod(obj interface{}) {
 		return
 	}
 
+	// Pod 对象的 Event 事件先判断是否由 VM 对象控制，如果是则将该 VM 对象加入 workQueue，否则不处理
 	controllerRef := controller.GetControllerOf(pod)
 	vmi := c.resolveControllerRef(pod.Namespace, controllerRef)
 	if vmi == nil {
@@ -1336,6 +1344,7 @@ func (c *VMIController) deletePod(obj interface{}) {
 	c.enqueueVirtualMachine(vmi)
 }
 
+// 收到 Event 事件直接加入 workQueue
 func (c *VMIController) addVirtualMachineInstance(obj interface{}) {
 	c.lowerVMIExpectation(obj)
 	c.enqueueVirtualMachine(obj)

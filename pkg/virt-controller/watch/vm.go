@@ -112,6 +112,7 @@ func NewVMController(vmiInformer cache.SharedIndexInformer,
 		statusUpdater: status.NewVMStatusUpdater(clientset),
 	}
 
+	// 监听 VM 对象、VMI 对象、DataVolume 对象并添加对应的 EventHandler
 	c.vmInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.addVirtualMachine,
 		DeleteFunc: c.deleteVirtualMachine,
@@ -206,7 +207,7 @@ func (c *VMController) Execute() bool {
 }
 
 func (c *VMController) execute(key string) error {
-
+	// 根据 key，从 Informer 的本地缓存中获取 VM 对象
 	obj, exists, err := c.vmInformer.GetStore().GetByKey(key)
 	if err != nil {
 		return nil
@@ -259,12 +260,14 @@ func (c *VMController) execute(key string) error {
 		}
 		return fresh, nil
 	})
+	// 创建 VirtualMachineControllerRefManager
 	cm := controller.NewVirtualMachineControllerRefManager(
 		controller.RealVirtualMachineControl{
 			Clientset: c.clientset,
 		}, vm, nil, virtv1.VirtualMachineGroupVersionKind, canAdoptFunc)
 
 	var vmi *virtv1.VirtualMachineInstance
+	// 根据 key，从Informer 的本地缓存中获取 VMI 对象
 	vmiObj, exist, err := c.vmiInformer.GetStore().GetByKey(vmKey)
 	if err != nil {
 		logger.Reason(err).Error("Failed to fetch vmi for namespace from cache.")
@@ -276,12 +279,14 @@ func (c *VMController) execute(key string) error {
 	} else {
 		vmi = vmiObj.(*virtv1.VirtualMachineInstance)
 
+		// VirtualMachineControllerRefManager 尝试收养或遗弃 VMI
 		vmi, err = cm.ClaimVirtualMachineInstanceByName(vmi)
 		if err != nil {
 			return err
 		}
 	}
 
+	// 根据 Spec.DataVolumeTemplates，从Informer 的本地缓存中获取 dataVolumes
 	dataVolumes, err := c.listDataVolumesForVM(vm)
 	if err != nil {
 		logger.Reason(err).Error("Failed to fetch dataVolumes for namespace from cache.")
@@ -306,6 +311,7 @@ func (c *VMController) execute(key string) error {
 		logger.Reason(syncErr).Error("Reconciling the VirtualMachine failed.")
 	}
 
+	// 更新 VM status
 	err = c.updateStatus(vm, vmi, syncErr)
 	if err != nil {
 		logger.Reason(err).Error("Updating the VirtualMachine status failed.")
@@ -595,6 +601,10 @@ func (c *VMController) startStop(vm *virtv1.VirtualMachine, vmi *virtv1.VirtualM
 	}
 	log.Log.Object(vm).V(4).Infof("VirtualMachine RunStrategy: %s", runStrategy)
 
+	// RunStrategy == Always：虚拟机实例 VMI 应该总是存在，如果虚拟机实例 VMI crash，会创建一个新的虚拟机，等同于 spec.running:true
+	// RunStrategy == RerunOnFailure：如果虚拟机实例 VMI 运行失败，会创建一个新的虚拟机，如果是由客户端主动成功关闭，则不会再重新创建
+	// RunStrategy == Manual：虚拟机实例 VMI 运行状况通过 start/stop/restart 手工来控制
+	// RunStrategy == Halted：虚拟机实例 VMI 应该总是挂起，等同于 spec.running:false
 	switch runStrategy {
 	case virtv1.RunStrategyAlways:
 		// For this RunStrategy, a VMI should always be running. If a StateChangeRequest
@@ -1276,6 +1286,7 @@ func (c *VMController) addVirtualMachineInstance(obj interface{}) {
 		return
 	}
 
+	// VMI 对象的 Event 事件先判断是否由 VM 对象所控制，如果是则将该 VM 对象加入 workQueue，否则找到匹配的 VM，并加入到 workQueue，尝试收养孤儿的 VMI 对象
 	// If it has a ControllerRef, that's all that matters.
 	if controllerRef := v1.GetControllerOf(vmi); controllerRef != nil {
 		log.Log.Object(vmi).V(4).Info("Looking for VirtualMachineInstance Ref")
@@ -1421,6 +1432,7 @@ func (c *VMController) addDataVolume(obj interface{}) {
 		c.deleteDataVolume(dataVolume)
 		return
 	}
+	// DataVolume 对象的 Event 事件先判断是否由 VM 对象所控制，如果是则将该 VM 对象加入 workQueue，否则不处理
 	controllerRef := v1.GetControllerOf(dataVolume)
 	if controllerRef != nil {
 		log.Log.Object(dataVolume).Info("Looking for DataVolume Ref")
@@ -1532,6 +1544,7 @@ func (c *VMController) queueVMsForDataVolume(dataVolume *cdiv1.DataVolume) {
 	}
 }
 
+// VM 对象的 Event 事件直接加入 workQueue
 func (c *VMController) addVirtualMachine(obj interface{}) {
 	c.enqueueVm(obj)
 }
@@ -1585,6 +1598,7 @@ func (c *VMController) updateStatus(vmOrig *virtv1.VirtualMachine, vmi *virtv1.V
 
 	vm := vmOrig.DeepCopy()
 
+	// 修改 vm.Status.Created、vm.Status.Ready
 	created := vmi != nil
 	vm.Status.Created = created
 
@@ -1596,10 +1610,12 @@ func (c *VMController) updateStatus(vmOrig *virtv1.VirtualMachine, vmi *virtv1.V
 
 	c.trimDoneVolumeRequests(vm)
 
+	// 修改 vm.Status.StateChangeRequests
 	if c.isTrimFirstChangeRequestNeeded(vm, vmi) {
 		vm.Status.StateChangeRequests = vm.Status.StateChangeRequests[1:]
 	}
 
+	// 修改 vm.Status.Conditions
 	syncStartFailureStatus(vm, vmi)
 	c.syncConditions(vm, vmi, syncErr)
 	c.setPrintableStatus(vm, vmi)
@@ -2061,6 +2077,7 @@ func (c *VMController) sync(vm *virtv1.VirtualMachine, vmi *virtv1.VirtualMachin
 		return nil, err
 	}
 
+	// 检查 dataVolumes 是否已经 ready，若已经 ready 则调用 startStop()
 	dataVolumesReady, err := c.handleDataVolumes(vm, dataVolumes)
 	if err != nil {
 		syncErr = &syncErrorImpl{fmt.Errorf("Error encountered while creating DataVolumes: %v", err), FailedCreateReason}

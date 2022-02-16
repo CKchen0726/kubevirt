@@ -244,6 +244,7 @@ func Execute() {
 	var err error
 	var app VirtControllerApp = VirtControllerApp{}
 
+	// 获取 leaderElectionConfiguration
 	app.LeaderElection = leaderelectionconfig.DefaultLeaderElectionConfiguration()
 
 	service.Setup(&app)
@@ -263,6 +264,7 @@ func Execute() {
 		golog.Fatal(err)
 	}
 
+	// 获取 KubevirtClient
 	app.restClient = app.clientSet.RestClient()
 
 	// Bootstrapping. From here on the initialization order is important
@@ -281,6 +283,7 @@ func Execute() {
 	stopChan := ctx.Done()
 	app.ctx = ctx
 
+	// 获取 informerFactory，并实例化一系列具体资源类型的Informer，例如 crdInformer、kubeVirtInformer、vmiInformer、kvPodInformer、nodeInformer、migrationInformer 等
 	app.informerFactory = controller.NewKubeInformerFactory(app.restClient, app.clientSet, nil, app.kubevirtNamespace)
 
 	app.crdInformer = app.informerFactory.CRD()
@@ -360,6 +363,7 @@ func Execute() {
 
 	app.migrationPolicyInformer = app.informerFactory.MigrationPolicy()
 
+	// 初始化一系列 controller，包括 vmiController、nodeController、migrationController、vmController、evacuationController、snapshotController、restoreController、replicaSetController、disruptionBudgetController
 	app.initCommon()
 	app.initReplicaSet()
 	app.initPool()
@@ -369,6 +373,7 @@ func Execute() {
 	app.initSnapshotController()
 	app.initRestoreController()
 	app.initWorkloadUpdaterController()
+	// 通过 leaderElector 来启动 virt-controller，并在 leaderElector 中启动各个 controller 的 Run 函数
 	go app.Run()
 
 	<-app.reInitChan
@@ -436,6 +441,7 @@ func (vca *VirtControllerApp) Run() {
 	panic("unreachable")
 }
 
+// 通过 leaderElector 来启动 virt-controller，并在 leaderElector 中启动各个 controller 的 Run 函数
 func (vca *VirtControllerApp) onStartedLeading() func(ctx context.Context) {
 	return func(ctx context.Context) {
 		stop := ctx.Done()

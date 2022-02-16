@@ -80,6 +80,7 @@ func NewVMIReplicaSet(vmiInformer cache.SharedIndexInformer, vmiRSInformer cache
 		statusUpdater: status.NewVMIRSStatusUpdater(clientset),
 	}
 
+	// 监听 replicaSet 对象、VMI 对象并添加对应的 EventHandler
 	c.vmiRSInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.addReplicaSet,
 		DeleteFunc: c.deleteReplicaSet,
@@ -145,7 +146,7 @@ func (c *VMIReplicaSet) Execute() bool {
 }
 
 func (c *VMIReplicaSet) execute(key string) error {
-
+	// 根据 key，从 Informer 的本地换成中获取 ReplicaSet 对象
 	obj, exists, err := c.vmiRSInformer.GetStore().GetByKey(key)
 	if err != nil {
 		return nil
@@ -187,6 +188,7 @@ func (c *VMIReplicaSet) execute(key string) error {
 
 	needsSync := c.expectations.SatisfiedExpectations(key)
 
+	// 根据 rs.Namespace 获取 vmis
 	// get all potentially interesting VMIs from the cache
 	vmis, err := c.listVMIsFromNamespace(rs.ObjectMeta.Namespace)
 
@@ -207,17 +209,20 @@ func (c *VMIReplicaSet) execute(key string) error {
 		}
 		return fresh, nil
 	})
+	// 根据获取 replicaSet 对象，创建 VMControllerRefManager，然后尝试收养或遗弃 vmis
 	cm := controller.NewVirtualMachineControllerRefManager(controller.RealVirtualMachineControl{Clientset: c.clientset}, rs, selector, virtv1.VirtualMachineInstanceReplicaSetGroupVersionKind, canAdoptFunc)
 	vmis, err = cm.ClaimVirtualMachineInstances(vmis)
 	if err != nil {
 		return err
 	}
 
+	// 将 vmis 分成两组：finishedVmis 和 activeVmis
 	finishedVmis := append(c.filterFinishedVMIs(vmis), c.filterUnkownVMIs(vmis)...)
 	activeVmis := c.filterActiveVMIs(vmis)
 
 	var scaleErr error
 
+	// 根据 Spec.Replicas 以及你档期 replicaSet 管理的 activeVmis，对 vmis 进行扩容或者缩容
 	// Scale up or down, if all expected creates and deletes were report by the listener
 	if needsSync && !rs.Spec.Paused && rs.ObjectMeta.DeletionTimestamp == nil {
 		scaleErr = c.scale(rs, activeVmis)
@@ -230,6 +235,7 @@ func (c *VMIReplicaSet) execute(key string) error {
 		logger.Reason(err).Error("Scaling the replicaset failed.")
 	}
 
+	// 更新 replicaSet 的 Status
 	err = c.updateStatus(rs.DeepCopy(), activeVmis, scaleErr)
 	if err != nil {
 		logger.Reason(err).Error("Updating the replicaset status failed.")
@@ -415,6 +421,8 @@ func (c *VMIReplicaSet) getMatchingControllers(vmi *virtv1.VirtualMachineInstanc
 	return rss
 }
 
+// VMI ReplicaSet 对象的 Event 事件，先判断 VMI 对象是否由 replicaSet 对象控制，如果是则将该 replicaSet 加入到 workQueue，
+// 否则找到与该 VMI 对象匹配的 replicaSet，然后将 replicaSet 依次加入 workQueue，尝试将该 VMI 对象收养
 // When a vmi is created, enqueue the replica set that manages it and update its expectations.
 func (c *VMIReplicaSet) addVirtualMachine(obj interface{}) {
 	vmi := obj.(*virtv1.VirtualMachineInstance)
@@ -559,6 +567,7 @@ func (c *VMIReplicaSet) deleteVirtualMachine(obj interface{}) {
 	c.enqueueReplicaSet(rs)
 }
 
+// VMI 对象的 Event 事件直接加入 workQ
 func (c *VMIReplicaSet) addReplicaSet(obj interface{}) {
 	c.enqueueReplicaSet(obj)
 }
